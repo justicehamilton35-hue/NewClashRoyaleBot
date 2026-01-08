@@ -4,6 +4,16 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from pathlib import Path
 import logging
+import tempfile
+import os
+
+# Roboflow imports (optional)
+try:
+    from inference_sdk import InferenceHTTPClient
+    ROBOFLOW_AVAILABLE = True
+except ImportError:
+    ROBOFLOW_AVAILABLE = False
+    logging.warning("Roboflow inference_sdk not installed. Card detection will use fallback mode.")
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +89,27 @@ class CardDetector:
         """
         self.model_path = model_path
         self.model = None
+        self.roboflow_client = None
+
+        # Roboflow API configuration
+        self.roboflow_api_key = "HpnLKZ5MzAGDA4MLnkLV"
+        self.roboflow_workspace = "justice-lejya"
+        self.card_model_id = "cards-clash-royale-i62d3/1"
+        self.troop_model_id = "clash-royale-xy2jw/2"
+
+        # Initialize Roboflow client if available
+        if ROBOFLOW_AVAILABLE:
+            try:
+                self.roboflow_client = InferenceHTTPClient(
+                    api_url="https://detect.roboflow.com",
+                    api_key=self.roboflow_api_key
+                )
+                logger.info("✅ Initialized Roboflow card detector with your trained models!")
+            except Exception as e:
+                logger.warning(f"Could not initialize Roboflow client: {e}")
 
         # Try to load YOLO model if available
-        if model_path and Path(model_path).exists():
+        elif model_path and Path(model_path).exists():
             try:
                 from ultralytics import YOLO
                 self.model = YOLO(model_path)
@@ -106,10 +134,91 @@ class CardDetector:
         Returns:
             List of detected cards
         """
-        if self.model:
+        if self.roboflow_client:
+            return self._detect_with_roboflow(frame, timestamp)
+        elif self.model:
             return self._detect_with_yolo(frame, timestamp)
         else:
             return self._detect_with_template_matching(frame, timestamp)
+
+    def _detect_with_roboflow(
+        self,
+        frame: np.ndarray,
+        timestamp: float
+    ) -> List[DetectedCard]:
+        """
+        Detect cards using Roboflow API
+
+        Args:
+            frame: Video frame
+            timestamp: Frame timestamp
+
+        Returns:
+            List of detected cards
+        """
+        detected_cards = []
+
+        try:
+            # Convert frame to format for API (encode as JPEG)
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                cv2.imwrite(tmp.name, frame)
+                tmp_path = tmp.name
+
+            # Run inference on card detection model
+            result = self.roboflow_client.infer(tmp_path, model_id=self.card_model_id)
+
+            # Parse predictions
+            if 'predictions' in result:
+                logger.debug(f"Roboflow detected {len(result['predictions'])} objects at {timestamp}s")
+
+                for pred in result['predictions']:
+                    class_name = pred.get('class', '').lower().replace(' ', '_').replace('-', '_')
+                    confidence = pred.get('confidence', 0.0)
+
+                    # Get bounding box
+                    x = pred.get('x', 0)
+                    y = pred.get('y', 0)
+
+                    # Calculate center position
+                    center_x = int(x)
+                    center_y = int(y)
+
+                    # Try to match with known cards
+                    card = None
+                    if class_name in CARDS:
+                        card = CARDS[class_name]
+                    else:
+                        # Try to find closest match
+                        for card_key in CARDS:
+                            if card_key in class_name or class_name in card_key:
+                                card = CARDS[card_key]
+                                break
+
+                    if card and confidence > 0.25:  # Minimum confidence threshold
+                        # Determine if player or opponent based on position
+                        frame_height = frame.shape[0]
+                        player = "player" if center_y > frame_height / 2 else "opponent"
+
+                        detected_cards.append(DetectedCard(
+                            card=card,
+                            confidence=confidence,
+                            position=(center_x, center_y),
+                            player=player,
+                            timestamp=timestamp
+                        ))
+
+                        logger.debug(f"✅ Detected {card.name} ({player}) at {timestamp}s with {confidence:.2f} confidence")
+
+            # Clean up temp file
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+
+        except Exception as e:
+            logger.error(f"Error in Roboflow detection: {e}", exc_info=True)
+
+        return detected_cards
 
     def _detect_with_yolo(
         self,
