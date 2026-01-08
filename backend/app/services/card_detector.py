@@ -12,7 +12,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Card:
     """Represents a Clash Royale card"""
     name: str
