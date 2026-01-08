@@ -62,6 +62,7 @@ async def upload_video(
         }
 
         # Start analysis in background
+        logger.info(f"Adding background task for job {job_id}")
         background_tasks.add_task(
             process_video_analysis,
             job_id,
@@ -69,6 +70,7 @@ async def upload_video(
             request.app.state.card_detector,
             request.app.state.game_analyzer
         )
+        logger.info(f"Background task added for job {job_id}")
 
         return {
             "job_id": job_id,
@@ -123,7 +125,7 @@ async def get_analysis_result(job_id: str):
     return job["analysis"]
 
 
-async def process_video_analysis(
+def process_video_analysis(
     job_id: str,
     video_path: str,
     card_detector: CardDetector,
